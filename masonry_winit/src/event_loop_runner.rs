@@ -1099,6 +1099,9 @@ impl MasonryState<'_> {
                 RenderRootSignal::Minimize => {
                     handle.set_minimized(true);
                 }
+                RenderRootSignal::Unminimize => {
+                    handle.set_minimized(false);
+                }
                 RenderRootSignal::Exit => {
                     event_loop.exit();
                 }

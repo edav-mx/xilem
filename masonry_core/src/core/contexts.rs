@@ -2005,6 +2005,12 @@ impl_context_method!(
             trace!("minimize");
             self.global_state.emit_signal(RenderRootSignal::Minimize);
         }
+        
+        /// Restore window from a minimized state
+        pub fn unminimize(&mut self) {
+            trace!("unminimize");
+            self.global_state.emit_signal(RenderRootSignal::Unminimize);
+        }
 
         /// Exits the application.
         pub fn exit(&mut self) {

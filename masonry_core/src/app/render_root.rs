@@ -264,6 +264,8 @@ pub enum RenderRootSignal {
     ToggleMaximized,
     /// The window should be minimized.
     Minimize,
+    /// The window should be restored from a minimized state.
+    Unminimize,
     /// The app should terminate.
     Exit,
     /// The [window system menu] should be shown.
