@@ -13,7 +13,7 @@ use crate::core::{
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size};
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
 use crate::parley::style::FontWeight;
 use crate::widgets::Label;
 
@@ -95,6 +95,16 @@ impl AnimatedF32 {
         } else {
             AnimationStatus::Ongoing
         }
+    }
+
+    /// Returns the target value.        
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    /// Returns the current value.        
+    pub fn value(&self) -> f32 {
+        self.value
     }
 }
 
@@ -231,8 +241,8 @@ impl Widget for VariableLabel {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         _len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         ctx.redirect_measurement(&mut self.label, axis, cross_length)
     }
 

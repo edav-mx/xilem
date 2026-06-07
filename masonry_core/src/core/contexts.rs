@@ -26,7 +26,7 @@ use crate::core::{
     WidgetState,
 };
 use crate::kurbo::{Affine, Axis, Insets, Point, Rect, Size, Vec2};
-use crate::layout::{LayoutSize, LenDef, SizeDef};
+use crate::layout::{LayoutSize, LenDef, Length, SizeDef};
 use crate::passes::layout::{place_widget, resolve_length, resolve_size, run_layout_on};
 use crate::peniko::Color;
 use crate::util::{ParentLinkedList, get_debug_color};
@@ -224,8 +224,7 @@ impl_context_method!(
         /// This transform is used during the mapping of this widget's border-box coordinate space
         /// to the parent's border-box coordinate space.
         ///
-        /// When calculating the effective border-box of this widget, first this transform
-        /// will be applied and then `scroll_translation` and `origin` applied on top.
+        /// This transform is applied before `scroll_translation` and `origin`.
         pub fn transform(&self) -> Affine {
             self.widget_state.transform
         }
@@ -351,17 +350,6 @@ impl MutateCtx<'_> {
         }
     }
 
-    /// Returns `true` if the [local transform] of this widget has been modified since
-    /// the last time this widget's transformation was resolved.
-    ///
-    /// This is exposed for Xilem, and is more likely to change or be removed
-    /// in major releases of Masonry.
-    ///
-    /// [local transform]: Self::transform
-    pub fn transform_has_changed(&self) -> bool {
-        self.widget_state.transform_changed
-    }
-
     /// Sets which property stack this widget uses for property resolution.
     pub fn set_property_stack(&mut self, stack_id: PropertyStackId) {
         self.widget_state.request_update_props = true;
@@ -440,11 +428,11 @@ impl EventCtx<'_> {
     /// capture the pointer during any other event.
     ///
     /// A widget normally only receives pointer events when the pointer is inside the widget's
-    /// layout box. Pointer capture causes widget layout boxes to be ignored: when the pointer is
+    /// border-box. Pointer capture causes border-box hit checks to be ignored: when the pointer is
     /// captured by a widget, that widget will continue receiving pointer events when the pointer
-    /// is outside the widget's layout box. Other widgets the pointer is over will not receive
+    /// is outside the widget's border-box. Other widgets the pointer is over will not receive
     /// events. Events that are not marked as handled by the capturing widget, bubble up to the
-    /// widget's ancestors, ignoring their layout boxes as well.
+    /// widget's ancestors, ignoring their border-boxes as well.
     ///
     /// The pointer cannot be captured by multiple widgets at the same time. If a widget has
     /// captured the pointer and another widget captures it, the first widget loses the pointer
@@ -504,8 +492,6 @@ impl EventCtx<'_> {
     /// Converts the given position from the window's coordinate space
     /// to this widget's content-box coordinate space.
     pub fn local_position(&self, p: PhysicalPosition<f64>) -> Point {
-        // TODO: Remove this .to_logical() conversion when scale refactor work happens.
-        //       https://github.com/linebender/xilem/issues/1264
         let LogicalPosition { x, y } = p.to_logical(self.global_state.scale_factor);
         self.to_local(Point { x, y })
     }
@@ -515,7 +501,7 @@ impl EventCtx<'_> {
 impl_context_method!(ActionCtx<'_>, EventCtx<'_>, {
     /// Sends a signal to parent widgets to scroll this widget's border-box into view.
     pub fn request_scroll_to_this(&mut self) {
-        let rect = self.widget_state.border_box_size().to_rect();
+        let rect = self.widget_state.border_box();
         self.global_state
             .scroll_request_targets
             .push((self.widget_state.id, rect));
@@ -607,9 +593,7 @@ impl AccessCtx<'_> {
 
 // --- MARK: COMPUTE LENGTH
 impl_context_method!(MeasureCtx<'_>, LayoutCtx<'_>, {
-    /// Computes the `child`'s preferred border-box length on the given `axis`.
-    ///
-    /// The returned length will be finite, non-negative, and in device pixels.
+    /// Computes the `child`'s preferred border-box [`Length`] on the given `axis`.
     ///
     /// Container widgets usually call this method as part of their [`measure`] logic,
     /// to help them calculate their own length on the given `axis`. They call it as part
@@ -624,10 +608,8 @@ impl_context_method!(MeasureCtx<'_>, LayoutCtx<'_>, {
     /// to ask the child to fit inside the available space. Sometimes a different fallback
     /// makes more sense, e.g. `Grid` uses [`LenDef::Fixed`] to fall back to the exact
     /// allocated child area size.
-    /// `auto_length` values must be finite, non-negative, and in device pixels.
-    /// An invalid `auto_length` will fall back to [`LenDef::MaxContent`].
     ///
-    /// `context_size` is the size, in device pixels, that is used to resolve relative sizes.
+    /// `context_size` is the size that is used to resolve relative sizes.
     /// For example [`Ratio(0.5)`] will result in half the context size.
     /// This is usually the container widget's content-box size, i.e. excluding borders and padding.
     /// Examples of exceptions include `Grid` which will provide the child's area size,
@@ -636,14 +618,6 @@ impl_context_method!(MeasureCtx<'_>, LayoutCtx<'_>, {
     ///
     /// `cross_length` is the length of the cross axis and is critical information for certain
     /// widgets, e.g. for text max advance or to keep an aspect ratio.
-    /// If present, `cross_length` must be finite, non-negative, and in device pixels.
-    /// An invalid `cross_length` will fall back to `None`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `auto_length` is non-finite or negative and debug assertions are enabled.
-    ///
-    /// Panics if `cross_length` is non-finite or negative and debug assertions are enabled.
     ///
     /// [`measure`]: Widget::measure
     /// [`layout`]: Widget::layout
@@ -656,8 +630,8 @@ impl_context_method!(MeasureCtx<'_>, LayoutCtx<'_>, {
         auto_length: LenDef,
         context_size: LayoutSize,
         axis: Axis,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         let id = child.id();
         let node = self.children.item_mut(id).unwrap();
         resolve_length(
@@ -759,13 +733,6 @@ impl MeasureCtx<'_> {
     /// This is because the redirection introduces new inputs in the form of [`auto_length`]
     /// and [`context_size`] that are not part of the cache key.
     ///
-    /// If present, `cross_length` must be finite, non-negative, and in device pixels.
-    /// An invalid `cross_length` will fall back to `None`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `cross_length` is non-finite or negative and debug assertions are enabled.
-    ///
     /// [`measure`]: Widget::measure
     /// [`compute_length`]: Self::compute_length
     /// [`auto_length`]: Self::auto_length
@@ -774,8 +741,8 @@ impl MeasureCtx<'_> {
         &mut self,
         child: &mut WidgetPod<impl Widget + ?Sized>,
         axis: Axis,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         // We're adding two new variables, auto_length and context_size, into the measure function,
         // which are not part of the cache key. Hence, we need to not cache.
         self.cache_result = false;
@@ -793,7 +760,10 @@ impl MeasureCtx<'_> {
 impl LayoutCtx<'_> {
     #[track_caller]
     fn assert_layout_done(&self, child: &WidgetPod<impl Widget + ?Sized>, method_name: &str) {
-        if self.get_child_state(child).needs_layout() {
+        let child_state = self.get_child_state(child);
+        // If debug_assertions are enabled, then request_layout is always true until visited.
+        let child_not_visited = cfg!(debug_assertions) && child_state.request_layout;
+        if child_state.needs_layout() || child_not_visited {
             debug_panic!(
                 "Error in {}: trying to call '{}' with child '{}' {} before computing its layout",
                 self.widget_id(),
@@ -819,7 +789,7 @@ impl LayoutCtx<'_> {
 
     /// Computes the `child`'s preferred border-box size.
     ///
-    /// The returned size will be finite, non-negative, and in device pixels.
+    /// The returned size will be finite, non-negative, and in logical pixels.
     ///
     /// Container widgets usually call this method as part of their [`layout`] logic, but
     /// ultimately they can disregard the result and pass a different size to [`run_layout`].
@@ -830,7 +800,7 @@ impl LayoutCtx<'_> {
     /// available space. However sometimes a different fallback makes more sense, e.g.
     /// `Grid` uses [`SizeDef::fixed`] to fall back to the exact allocated child area size.
     ///
-    /// `context_size` is the size, in device pixels, that is used to resolve relative sizes.
+    /// `context_size` is the size that is used to resolve relative sizes.
     /// For example [`Ratio(0.5)`] will result in half the context size.
     /// This is usually the container widget's content-box size, i.e. excluding borders and padding.
     /// Examples of exceptions include `Grid` which will provide the child's area size,
@@ -869,7 +839,7 @@ impl LayoutCtx<'_> {
     /// If the chosen border-box `size` is smaller than what is required to fit the child's
     /// borders and padding, then the `size` will be expanded to meet those constraints.
     ///
-    /// The provided `size` must be finite, non-negative, and in device pixels.
+    /// The provided `size` must be finite, non-negative, and in logical pixels.
     /// Non-finite or negative size will fall back to zero with a logged warning.
     ///
     /// # Panics
@@ -945,7 +915,7 @@ impl LayoutCtx<'_> {
             insets.x1 - self.widget_state.border_box_insets.x1,
             insets.y1 - self.widget_state.border_box_insets.y1,
         );
-        self.widget_state.paint_insets = insets.nonnegative();
+        self.widget_state.paint_box_insets = insets.nonnegative();
     }
 
     /// Sets explicit baselines for this widget.
@@ -1140,12 +1110,6 @@ impl LayoutCtx<'_> {
 }
 
 impl ComposeCtx<'_> {
-    // TODO - Remove?
-    /// Returns whether [`Widget::compose`] will be called on this widget.
-    pub fn needs_compose(&self) -> bool {
-        self.widget_state.needs_compose
-    }
-
     /// Sets the scroll translation for the child widget.
     ///
     /// The translation is applied on top of the position from [`LayoutCtx::place_child`].
@@ -1177,6 +1141,7 @@ impl ComposeCtx<'_> {
         if translation != child.scroll_translation {
             child.scroll_translation = translation;
             child.transform_changed = true;
+            child.needs_compose = true;
         }
     }
 
@@ -1209,13 +1174,14 @@ impl ComposeCtx<'_> {
         if translation != child.scroll_translation {
             child.scroll_translation = translation;
             child.transform_changed = true;
+            child.needs_compose = true;
         }
     }
 }
 
-// --- MARK: GET LAYOUT
+// --- MARK: GET GEOMETRY
 // Methods on all context types except MeasureCtx and LayoutCtx
-// These methods access layout info calculated during the layout pass.
+// These methods access geometry resolved during layout and compose.
 impl_context_method!(
     MutateCtx<'_>,
     ActionCtx<'_>,
@@ -1226,46 +1192,18 @@ impl_context_method!(
     PaintCtx<'_>,
     AccessCtx<'_>,
     {
-        /// Returns the aligned content-box size of this widget.
-        pub fn content_box_size(&self) -> Size {
-            let border_box_size = self.widget_state.border_box_size();
-            Size::new(
-                (border_box_size.width - self.widget_state.border_box_insets.x_value()).max(0.),
-                (border_box_size.height - self.widget_state.border_box_insets.y_value()).max(0.),
-            )
-        }
-
-        /// Returns the aligned border-box size of this widget.
-        pub fn border_box_size(&self) -> Size {
-            self.widget_state.border_box_size()
-        }
-
-        /// Returns the aligned paint-box size of this widget.
-        pub fn paint_box_size(&self) -> Size {
-            self.widget_state.paint_box().size()
-        }
-
         /// Returns the aligned content-box rect of this widget
         /// in this widget's content-box coordinate space.
         pub fn content_box(&self) -> Rect {
-            let border_box_size = self.widget_state.border_box_size();
-            Rect::new(
-                0.,
-                0.,
-                (border_box_size.width - self.widget_state.border_box_insets.x_value()).max(0.),
-                (border_box_size.height - self.widget_state.border_box_insets.y_value()).max(0.),
-            )
+            let translation = self.widget_state.border_box_translation();
+            self.widget_state.content_box() - translation
         }
 
         /// Returns the aligned border-box rect of this widget
         /// in this widget's content-box coordinate space.
         pub fn border_box(&self) -> Rect {
-            let border_box_size = self.widget_state.border_box_size();
-            let origin = Point::new(
-                -self.widget_state.border_box_insets.x0,
-                -self.widget_state.border_box_insets.y0,
-            );
-            Rect::from_origin_size(origin, border_box_size)
+            let translation = self.widget_state.border_box_translation();
+            self.widget_state.border_box() - translation
         }
 
         /// Returns the aligned paint-box rect of this widget
@@ -1324,11 +1262,6 @@ impl_context_method!(
             self.widget_state.border_box_translation()
         }
 
-        /// Returns the widget's effective border-box origin in the window's coordinate space.
-        pub fn window_origin(&self) -> Point {
-            self.widget_state.border_box_window_origin()
-        }
-
         /// Returns the global transform mapping this widget's content-box coordinate space
         /// to the window's coordinate space.
         ///
@@ -1360,27 +1293,15 @@ impl_context_method!(
             let translation = self.widget_state.border_box_translation();
             self.widget_state.window_transform * (point + translation)
         }
+
+        /// Returns the DPI scaling factor.
+        ///
+        /// This can be useful for loading image resources meant for a specific scale.
+        pub fn scale_factor(&self) -> f64 {
+            self.global_state.scale_factor
+        }
     }
 );
-
-impl_context_method!(AccessCtx<'_>, EventCtx<'_>, PaintCtx<'_>, {
-    // TODO - Once Masonry uses physical coordinates, add this method everywhere.
-    // See https://github.com/linebender/xilem/issues/1264
-    /// Returns DPI scaling factor.
-    ///
-    /// This is not required for most widgets, and should be used only for precise
-    /// rendering, such as rendering single pixel lines or selecting image variants.
-    /// This is currently only provided in the render stages, as these are the only passes which
-    /// are re-run when the scale factor changes, except [`EventCtx`] where it is necessary to
-    /// translate pointer events which are currently in physical coordinates.
-    ///
-    /// Note that accessibility nodes and paint results will automatically be scaled by Masonry.
-    /// This also doesn't account for the widget's current transform, which cannot currently be
-    /// accessed by widgets directly.
-    pub fn get_scale_factor(&self) -> f64 {
-        self.global_state.scale_factor
-    }
-});
 
 // --- MARK: GET STATUS
 
@@ -1625,11 +1546,12 @@ impl_context_method!(
             self.widget_state.set_needs_layout(true);
         }
 
-        // TODO - Document better
-        /// Requests a [`compose`] pass.
+        /// Requests that this widget's [`compose`] method be called.
         ///
         /// The compose pass is often cheaper than the layout pass,
         /// because it can only transform individual widgets' position.
+        /// Use this when widget-owned state read by [`compose`] changes,
+        /// such as a scroll offset applied to a child during compose.
         ///
         /// [`compose`]: crate::core::Widget::compose
         pub fn request_compose(&mut self) {
@@ -1742,7 +1664,7 @@ impl_context_method!(
         pub fn set_transform(&mut self, transform: Affine) {
             self.widget_state.transform = transform;
             self.widget_state.transform_changed = true;
-            self.request_compose();
+            self.widget_state.needs_compose = true;
         }
 
         /// Adds a string to this widget's [class set].
@@ -1961,7 +1883,9 @@ impl_context_method!(
 
         /// Removes the IME cursor area.
         ///
-        /// See [`LayoutCtx::set_ime_area`](LayoutCtx::set_ime_area) for more details.
+        /// See [`set_ime_area`] for more details.
+        ///
+        /// [`set_ime_area`]: Self::set_ime_area
         pub fn clear_ime_area(&mut self) {
             self.widget_state.ime_area = None;
         }

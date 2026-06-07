@@ -16,7 +16,7 @@ use crate::core::{
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, BezPath, Cap, Line, Point, Size, Stroke};
-use crate::layout::{LayoutSize, LenReq, Length, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
 use crate::peniko::Gradient;
 use crate::properties::{BackwardColor, ContentColor, ForwardColor, HeatColor, StepInputStyle};
 use crate::theme;
@@ -1106,9 +1106,9 @@ impl<T: Steppable> Widget for StepInput<T> {
             PointerEvent::Move(pu) => {
                 // If we're hovered, highlight the correct side's button.
                 if ctx.is_hovered() {
-                    let size = ctx.content_box_size();
+                    let content_box_center_x = ctx.content_box().center().x;
                     let local_x = ctx.local_position(pu.current.position).x;
-                    let hover_backward = local_x <= size.width * 0.5;
+                    let hover_backward = local_x <= content_box_center_x;
                     if hover_backward != self.hover_backward {
                         self.hover_backward = hover_backward;
                         ctx.request_paint_only();
@@ -1214,7 +1214,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                 // * The button was previously pressed down on us (active)
                 // * The pointer is still on us (hovered)
                 if self.slide_last.is_none() && ctx.is_active() && ctx.is_hovered() {
-                    let size = ctx.content_box_size();
+                    let content_box_center_x = ctx.content_box().center().x;
                     let local_x = ctx.local_position(pbe.state.position).x;
 
                     // Snap based on modifier
@@ -1225,7 +1225,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                     };
 
                     // Update the active value based on which side was clicked
-                    let value_changed = if local_x <= size.width * 0.5 {
+                    let value_changed = if local_x <= content_box_center_x {
                         if snap {
                             self.prev_snap()
                         } else {
@@ -1316,19 +1316,15 @@ impl<T: Steppable> Widget for StepInput<T> {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let content_height = theme::BASIC_WIDGET_HEIGHT.dp(scale);
+        cross_length: Option<Length>,
+    ) -> Length {
+        let content_height = theme::BASIC_WIDGET_HEIGHT;
 
         let cache = ctx.property_cache();
         let style = props.get::<StepInputStyle>(cache);
 
         let (len_req, min_result) = match len_req {
-            LenReq::MinContent | LenReq::MaxContent => (len_req, 0.),
+            LenReq::MinContent | LenReq::MaxContent => (len_req, Length::ZERO),
             // We always want to use up all offered space but may need even more,
             // so we implement FitContent as space.max(MinContent).
             LenReq::FitContent(space) => (LenReq::MinContent, space),
@@ -1339,7 +1335,7 @@ impl<T: Steppable> Widget for StepInput<T> {
                 StepInputStyle::Basic => {
                     let vertical_space = cross_length.unwrap_or(content_height);
                     let (btn_length, btn_edge_pad) =
-                        Self::basic_button_length(vertical_space, None);
+                        Self::basic_button_length(vertical_space.get(), None);
                     match len_req {
                         LenReq::MinContent => 2. * (btn_length + 2. * btn_edge_pad),
                         LenReq::MaxContent => 2. * (btn_length * 3.),
@@ -1349,14 +1345,15 @@ impl<T: Steppable> Widget for StepInput<T> {
                 StepInputStyle::Flow => {
                     let vertical_space = cross_length.unwrap_or(content_height);
                     let (arrow_width, _, arrow_edge_pad) =
-                        Self::flow_button_length(vertical_space, None);
+                        Self::flow_button_length(vertical_space.get(), None);
                     match len_req {
                         LenReq::MinContent => 2. * (2. * arrow_width + arrow_edge_pad),
                         LenReq::MaxContent => 2. * (4. * arrow_width + arrow_edge_pad),
                         LenReq::FitContent(_) => unreachable!(),
                     }
                 }
-            },
+            }
+            .px(),
             Axis::Vertical => content_height,
         };
 
@@ -1369,19 +1366,18 @@ impl<T: Steppable> Widget for StepInput<T> {
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
         let cross = axis.cross();
         let label_cross_length = match cross {
-            Axis::Horizontal => {
-                cross_length.map(|cross_length| (cross_length - calc_button_length(cross)).max(0.))
-            }
+            Axis::Horizontal => cross_length
+                .map(|cross_length| cross_length.saturating_sub(calc_button_length(cross))),
             Axis::Vertical => cross_length,
         };
         let label_length = if let Some(label) = self.label.as_mut() {
             ctx.compute_length(label, auto_length, context_size, axis, label_cross_length)
         } else {
-            0.
+            Length::ZERO
         };
 
         let length = match axis {
-            Axis::Horizontal => label_length + button_length,
+            Axis::Horizontal => label_length.saturating_add(button_length),
             Axis::Vertical => label_length.max(button_length),
         };
 
@@ -1535,7 +1531,7 @@ impl<T: Steppable> StepInput<T> {
         let color_backward = *props.get::<BackwardColor>(cache);
         let color_forward = *props.get::<ForwardColor>(cache);
 
-        let size = ctx.content_box_size();
+        let size = ctx.content_box().size();
         let (_, forward, backward) = self.visual_speed();
 
         let (btn_length, btn_edge_pad) = Self::basic_button_length(size.height, Some(size.width));
@@ -1608,7 +1604,7 @@ impl<T: Steppable> StepInput<T> {
         let color_forward = *props.get::<ForwardColor>(cache);
         let color_heat = *props.get::<HeatColor>(cache);
 
-        let size = ctx.content_box_size();
+        let size = ctx.content_box().size();
         let (speed, forward, backward) = self.visual_speed();
         let sliding = forward || backward;
 
@@ -2379,7 +2375,7 @@ mod tests {
             ))
             .with_fixed(si(500, (StepInputStyle::Flow, Dimensions::width(100.px()))))
             .prepare()
-            .with_props(Padding::all(10.));
+            .with_props(Padding::all(10.px()));
 
         let mut harness = TestHarness::create_with_size(test_property_set(), root, (150, 525));
 
@@ -2405,7 +2401,7 @@ mod tests {
             .with_fixed(lines_backward)
             .with_fixed(lines_forward)
             .prepare()
-            .with_props(Padding::all(10.));
+            .with_props(Padding::all(10.px()));
 
         let mut harness = TestHarness::create_with_size(test_property_set(), root, (270, 200));
 
@@ -2460,7 +2456,7 @@ mod tests {
             .with_fixed(basic(1234, (Dimensions::fixed(100.px(), 200.px())).into()))
             .with_fixed(flow(1234, (Dimensions::fixed(100.px(), 200.px())).into()))
             .prepare()
-            .with_props(Padding::all(10.));
+            .with_props(Padding::all(10.px()));
 
         let mut harness = TestHarness::create_with_size(test_property_set(), root, (320, 650));
 

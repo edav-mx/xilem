@@ -13,7 +13,7 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Size, Vec2};
 use crate::layers::SelectorMenu;
-use crate::layout::{LayoutSize, LenReq, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenReq, Length, SizeDef};
 use crate::theme;
 use crate::util::debug_panic;
 use crate::widgets::{Label, SelectorItem};
@@ -140,10 +140,11 @@ impl Selector {
         let layer_widget = NewWidget::new(menu);
 
         // TODO: We should ideally create a layer with the same transform as this widget.
+        let border_box = ctx.border_box();
         ctx.create_layer(
             layer_type,
             layer_widget,
-            ctx.window_origin() + Vec2::new(0., ctx.border_box_size().height),
+            ctx.to_window(border_box.origin()) + Vec2::new(0., border_box.size().height),
         );
     }
 }
@@ -227,12 +228,8 @@ impl Widget for Selector {
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        cross_length: Option<Length>,
+    ) -> Length {
         let auto_length = len_req.into();
         let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
@@ -251,8 +248,8 @@ impl Widget for Selector {
         // we make sure we will have at least the same height as the default text input.
         // We also set a minimum width.
         match axis {
-            Axis::Horizontal => length.max(theme::SELECTOR_MIN_WIDTH * scale),
-            Axis::Vertical => length.max(theme::BORDERED_WIDGET_HEIGHT * scale),
+            Axis::Horizontal => length.max(theme::SELECTOR_MIN_WIDTH.px()),
+            Axis::Vertical => length.max(theme::BORDERED_WIDGET_HEIGHT.px()),
         }
     }
 

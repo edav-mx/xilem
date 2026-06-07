@@ -18,7 +18,7 @@ use crate::core::{
     QueryCtx, RegisterCtx, TextEvent, Update, UpdateCtx, WidgetMut, WidgetRef, pre_paint,
 };
 use crate::imaging::Painter;
-use crate::layout::LenReq;
+use crate::layout::{LenReq, Length};
 
 /// A unique identifier for a single [`Widget`].
 ///
@@ -246,10 +246,7 @@ pub trait Widget: AsDynWidget + Any {
     /// Handles a property being added, changed, or removed.
     fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {}
 
-    /// Computes the content-box length that the widget wants to be on the given `axis`.
-    ///
-    /// The returned length must be finite, non-negative, and in device pixels.
-    /// If an invalid length is returned, Masonry will treat it as zero.
+    /// Computes the content-box [`Length`] that the widget wants to be on the given `axis`.
     ///
     /// The goal of this method is for a parent to learn how its children want to be sized.
     /// All the inputs are hints towards what the parent is planning for its child.
@@ -271,7 +268,7 @@ pub trait Widget: AsDynWidget + Any {
     /// then you should use [`redirect_measurement`] to have the child answer for you.
     ///
     /// The `cross_length`, if present, says that the cross-axis of the given `axis` of this
-    /// measured widget's content-box can be presumed to be `cross_length` long, in device pixels.
+    /// measured widget's content-box can be presumed to be `cross_length` long.
     /// This information is often very useful for measuring `axis` and should be used.
     /// However, ultimately it may end up not materializing. That is to say, it is
     /// a valid assumption for the duration of this `measure` call but there is
@@ -310,15 +307,6 @@ pub trait Widget: AsDynWidget + Any {
     /// or you need to request layout for reasons that don't affect the result of this computation,
     /// then your widget should also have its own inner cache layer to avoid redoing the same work.
     ///
-    /// As for the inputs provided to `measure`, `len_req` must be [sanitized] and
-    /// `cross_length`, if present, must be [sanitized] and in device pixels.
-    /// When Masonry calls `measure` during the layout pass, it guarantees that for these inputs.
-    ///
-    /// # Panics
-    ///
-    /// Masonry will panic if `measure` returns a non-finite or negative value
-    /// and debug assertions are enabled.
-    ///
     /// [`compute_length`]: MeasureCtx::compute_length
     /// [`redirect_measurement`]: MeasureCtx::redirect_measurement
     /// [sanitized]: crate::util::Sanitize
@@ -332,8 +320,8 @@ pub trait Widget: AsDynWidget + Any {
         props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64;
+        cross_length: Option<Length>,
+    ) -> Length;
 
     /// Lays out the widget with the given content-box `size`.
     ///
@@ -344,7 +332,7 @@ pub trait Widget: AsDynWidget + Any {
     /// 1. (Optionally) Call [`compute_size`] to get the border-box size the child wants to be.
     ///    If the container has somehow already decided on the child length on one axis, then it
     ///    should instead call [`compute_length`] with the correct border-box `cross_length`.
-    /// 2. Decide on a final border-box [`Size`] that the child should be. The parent is in control.
+    /// 2. Decide what the border-box [`Size`] of the child should be. The parent is in control.
     ///    Note, however, that the child will still be in control of its own [`paint`] method.
     ///    If a child is given a size smaller than its [`MinContent`], its painting is likely
     ///    to overflow its bounds, depending on both the child's and the parent's clip settings.
@@ -361,7 +349,7 @@ pub trait Widget: AsDynWidget + Any {
     /// Container widgets must not add or remove children during layout.
     /// Doing so is a logic error and may lead to panics.
     ///
-    /// The `size` given to this method must be finite, non-negative, and in device pixels.
+    /// The `size` given to this method must be finite, non-negative, and in logical pixels.
     /// When Masonry calls `layout` during the layout pass, it will guarantee that for `size`.
     ///
     /// [`compute_size`]: LayoutCtx::compute_size
@@ -373,7 +361,14 @@ pub trait Widget: AsDynWidget + Any {
     /// [`MinContent`]: crate::layout::Dim::MinContent
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size);
 
-    /// Runs after the widget's final transform has been computed.
+    /// Updates compose-only state like scroll translations.
+    ///
+    /// Cheaper alternative than doing a full layout.
+    ///
+    /// This method is guaranteed to be called after this widget's [`layout`] method runs,
+    /// and after this widget explicitly requests compose. It may also be called in other scenarios.
+    ///
+    /// [`layout`]: Self::layout
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {}
 
     /// Paints the widget's background.
@@ -593,7 +588,7 @@ pub fn find_widget_under_pointer<'c>(
         return None;
     }
 
-    let local_pos = ctx.window_transform().inverse() * pos;
+    let local_pos = ctx.to_local(pos);
 
     if let Some(clip) = ctx.clip_path()
         && !clip.contains(local_pos)

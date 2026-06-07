@@ -27,7 +27,6 @@ fn get_pointer_target(
     }
 
     if let Some(pointer_pos) = pointer_pos {
-        // TODO - Apply scale
         let pointer_pos = (pointer_pos.x, pointer_pos.y).into();
         return root
             .get_widget(root.root_id())
@@ -395,7 +394,7 @@ pub(crate) fn run_on_access_event_pass(
         }
         accesskit::Action::ScrollIntoView if !handled.is_handled() => {
             let widget_state = root.widget_arena.get_state(target);
-            let rect = widget_state.border_box_size().to_rect();
+            let rect = widget_state.border_box();
             root.global_state
                 .scroll_request_targets
                 .push((target, rect));

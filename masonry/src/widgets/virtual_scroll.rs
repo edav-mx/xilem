@@ -15,7 +15,7 @@ use crate::core::{
 use crate::dpi::PhysicalPosition;
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Size, Vec2};
-use crate::layout::{LenDef, LenReq, SizeDef};
+use crate::layout::{LenDef, LenReq, Length, SizeDef};
 use crate::util::debug_panic;
 
 /// The action type sent by the [`VirtualScroll`] widget.
@@ -480,7 +480,7 @@ impl VirtualScroll {
 
     /// A wrapper to use [`post_scroll`](Self::post_scroll) in event methods.
     fn event_post_scroll(&mut self, ctx: &mut EventCtx<'_>) {
-        match self.post_scroll(ctx.content_box_size()) {
+        match self.post_scroll(ctx.content_box().size()) {
             PostScrollResult::Layout => {
                 ctx.request_layout();
             }
@@ -491,7 +491,7 @@ impl VirtualScroll {
 
     /// A wrapper to use [`post_scroll`](Self::post_scroll) in update methods.
     fn update_post_scroll(&mut self, ctx: &mut UpdateCtx<'_>) {
-        match self.post_scroll(ctx.content_box_size()) {
+        match self.post_scroll(ctx.content_box().size()) {
             PostScrollResult::Layout => {
                 ctx.request_layout();
             }
@@ -536,10 +536,8 @@ impl Widget for VirtualScroll {
     ) {
         match event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
-                let size = ctx.content_box_size();
-                // TODO - Remove reference to scale factor.
-                // See https://github.com/linebender/xilem/issues/1264
-                let scale_factor = ctx.get_scale_factor();
+                let size = ctx.content_box().size();
+                let scale_factor = ctx.scale_factor();
                 let line_px = PhysicalPosition {
                     x: 120.0 * scale_factor,
                     y: 120.0 * scale_factor,
@@ -615,7 +613,7 @@ impl Widget for VirtualScroll {
             };
             let amount = match unit {
                 accesskit::ScrollUnit::Item => self.anchor_height,
-                accesskit::ScrollUnit::Page => ctx.content_box_size().height,
+                accesskit::ScrollUnit::Page => ctx.content_box().size().height,
             };
             if event.action == accesskit::Action::ScrollUp {
                 self.scroll_offset_from_anchor -= amount;
@@ -638,7 +636,7 @@ impl Widget for VirtualScroll {
         match event {
             Update::RequestPanToChild(target) => {
                 let new_pos_y = super::portal::compute_pan_range(
-                    0.0..ctx.content_box_size().height,
+                    0.0..ctx.content_box().size().height,
                     target.min_y()..target.max_y(),
                 )
                 .start;
@@ -655,8 +653,8 @@ impl Widget for VirtualScroll {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
+        _cross_length: Option<Length>,
+    ) -> Length {
         // Our preferred size is a const square in logical pixels.
         //
         // It is not clear that a data-derived result would be better.
@@ -672,14 +670,10 @@ impl Widget for VirtualScroll {
         // Still, we would run into complexities with ensuring they are loaded in time for measure.
         //
         // So, for now, we just use a simple O(1) default.
-        const DEFAULT_LENGTH: f64 = 100.;
-
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
+        const DEFAULT_LENGTH: Length = Length::const_px(100.);
 
         match len_req {
-            LenReq::MinContent | LenReq::MaxContent => DEFAULT_LENGTH * scale,
+            LenReq::MinContent | LenReq::MaxContent => DEFAULT_LENGTH,
             LenReq::FitContent(space) => space,
         }
     }
@@ -1008,7 +1002,7 @@ impl Widget for VirtualScroll {
             node.add_action(accesskit::Action::ScrollUp);
         }
         let at_end = self.anchor_index + 1 == self.valid_range.end && {
-            let max_scroll = (self.anchor_height - ctx.content_box_size().height / 2.).max(0.0);
+            let max_scroll = (self.anchor_height - ctx.content_box().size().height / 2.).max(0.0);
             self.scroll_offset_from_anchor >= max_scroll
         };
         if !at_end {

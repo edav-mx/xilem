@@ -144,13 +144,9 @@ impl Widget for DisclosureButton {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        _cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
-        let length = DEFAULT_LENGTH.dp(scale);
+        _cross_length: Option<Length>,
+    ) -> Length {
+        let length = DEFAULT_LENGTH;
 
         match len_req {
             LenReq::MinContent | LenReq::MaxContent => length,
@@ -166,13 +162,11 @@ impl Widget for DisclosureButton {
         props: &PropertiesRef<'_>,
         painter: &mut Painter<'_>,
     ) {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
         let cache = ctx.property_cache();
         let button_color = props.get::<ContentColor>(cache);
 
-        let size = ctx.content_box_size();
+        let content_box = ctx.content_box();
+        let size = content_box.size();
         let half_size = size * 0.5;
 
         let mut arrow = BezPath::new();
@@ -180,7 +174,7 @@ impl Widget for DisclosureButton {
         arrow.line_to((half_size.width, 0.0));
         arrow.line_to((0.0, half_size.height));
 
-        let mut affine = Affine::translate(half_size.to_vec2());
+        let mut affine = Affine::translate(content_box.center().to_vec2());
 
         // Rotate if it's disclosed
         if self.is_disclosed() {
@@ -190,7 +184,7 @@ impl Widget for DisclosureButton {
         painter
             .stroke(
                 arrow,
-                &Stroke::new(2.0 * scale).with_join(Join::Miter),
+                &Stroke::new(2.0).with_join(Join::Miter),
                 button_color.color,
             )
             .transform(affine)
@@ -200,7 +194,7 @@ impl Widget for DisclosureButton {
             // TODO: Perhaps change the color of the arrow instead?
             let rect = ctx.border_box().to_rounded_rect(2.0);
             painter
-                .stroke(rect, &Stroke::new(1.0 * scale), BrushRef::Solid(LIGHT_BLUE))
+                .stroke(rect, &Stroke::new(1.0), BrushRef::Solid(LIGHT_BLUE))
                 .draw();
         }
     }

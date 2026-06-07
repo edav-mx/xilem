@@ -13,8 +13,8 @@ use crate::core::{
     PropertiesRef, RegisterCtx, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
 };
 use crate::imaging::Painter;
-use crate::kurbo::{Axis, Cap, Line, Point, Size, Stroke, Vec2};
-use crate::layout::LenReq;
+use crate::kurbo::{Axis, Cap, Line, Size, Stroke, Vec2};
+use crate::layout::{LenReq, Length};
 use crate::properties::ContentColor;
 use crate::theme;
 
@@ -87,17 +87,13 @@ impl Widget for Spinner {
         _props: &PropertiesRef<'_>,
         _axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
-        // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-        //       https://github.com/linebender/xilem/issues/1264
-        let scale = 1.0;
-
+        cross_length: Option<Length>,
+    ) -> Length {
         match len_req {
             // For preferred length we try to keep a square aspect ratio,
             // and when the cross length is unknown we fall back to the theme's default.
             LenReq::MinContent | LenReq::MaxContent => {
-                cross_length.unwrap_or(theme::BASIC_WIDGET_HEIGHT.dp(scale))
+                cross_length.unwrap_or(theme::BASIC_WIDGET_HEIGHT)
             }
             LenReq::FitContent(space) => space,
         }
@@ -115,8 +111,9 @@ impl Widget for Spinner {
         let color = props.get::<ContentColor>(cache);
 
         let t = self.t;
-        let size = ctx.content_box_size();
-        let center = Point::new(size.width / 2.0, size.height / 2.0);
+        let content_box = ctx.content_box();
+        let size = content_box.size();
+        let center = content_box.center();
         let scale_factor = size.width.min(size.height) / 40.0;
 
         for step in 1..=12 {

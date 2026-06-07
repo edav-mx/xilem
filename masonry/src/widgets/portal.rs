@@ -1,7 +1,7 @@
 // Copyright 2020 the Xilem Authors and the Druid Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::Range;
+use std::{any::TypeId, ops::Range};
 
 use accesskit::{Node, Role};
 use tracing::{Span, trace_span};
@@ -9,14 +9,18 @@ use tracing::{Span, trace_span};
 use crate::core::{
     AccessCtx, AccessEvent, ChildrenIds, ComposeCtx, EventCtx, FromDynWidget, LayoutCtx,
     MeasureCtx, NewWidget, NoAction, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut,
-    PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetId, WidgetMut,
-    WidgetPod,
+    PropertiesRef, Property, RegisterCtx, TextEvent, Update, UpdateCtx, UsesProperty, Widget,
+    WidgetId, WidgetMut, WidgetPod,
 };
 use crate::dpi::{LogicalPosition, PhysicalPosition};
 use crate::imaging::Painter;
 use crate::kurbo::{Axis, Point, Rect, Size, Vec2};
-use crate::layout::{LayoutSize, LenDef, LenReq, SizeDef};
+use crate::layout::{AsUnit, LayoutSize, LenDef, LenReq, Length, SizeDef};
+use crate::properties::AutoHideScrollBar;
 use crate::widgets::ScrollBar;
+
+// TODO: make this configurable or move to theme
+const SCROLLBAR_ANIM_OVER_MILLIS: f32 = 300.;
 
 // TODO - refactor - see https://github.com/linebender/xilem/issues/366
 // TODO - rename "Portal" to "ScrollPortal"?
@@ -54,6 +58,7 @@ pub struct Portal<W: Widget + ?Sized> {
     scrollbar_horizontal_visible: bool,
     scrollbar_vertical: WidgetPod<ScrollBar>,
     scrollbar_vertical_visible: bool,
+    nanos_since_last_pointer_move: Option<u64>,
 }
 
 // --- MARK: BUILDERS
@@ -72,6 +77,7 @@ impl<W: Widget + ?Sized> Portal<W> {
             scrollbar_horizontal_visible: false,
             scrollbar_vertical: WidgetPod::new(ScrollBar::new(Axis::Vertical, 0.0, 0.0)),
             scrollbar_vertical_visible: false,
+            nanos_since_last_pointer_move: None,
         }
     }
 
@@ -353,7 +359,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Portal<W> {
     ///
     /// A position of zero means no scrolling at all.
     pub fn set_viewport_pos(this: &mut WidgetMut<'_, Self>, position: Point) -> bool {
-        let portal_size = this.ctx.content_box_size();
+        let portal_size = this.ctx.content_box().size();
         let content_size = this.widget.content_size;
 
         let pos_changed = this
@@ -366,7 +372,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Portal<W> {
             let progress_y = this.widget.viewport_pos.y / (content_size - portal_size).height;
             Self::vertical_scrollbar_mut(this).widget.cursor_progress = progress_y;
             Self::vertical_scrollbar_mut(this).ctx.request_render();
-            this.ctx.request_layout();
+            this.ctx.request_compose();
         }
         pos_changed
     }
@@ -381,7 +387,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Portal<W> {
     /// `target` is in the child's border-box coordinate space, meaning a target
     /// of `(0, 0, 10, 10)` will scroll an item at the top-left of the child into view.
     pub fn pan_viewport_to(this: &mut WidgetMut<'_, Self>, target: Rect) -> bool {
-        let portal_size = this.ctx.content_box_size();
+        let portal_size = this.ctx.content_box().size();
         let viewport = Rect::from_origin_size(this.widget.viewport_pos, portal_size);
 
         let new_pos_x = compute_pan_range(
@@ -399,6 +405,8 @@ impl<W: Widget + FromDynWidget + ?Sized> Portal<W> {
     }
 }
 
+impl<W: Widget> UsesProperty<AutoHideScrollBar> for Portal<W> {}
+
 // --- MARK: IMPL WIDGET
 impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
     type Action = NoAction;
@@ -406,17 +414,18 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
     fn on_pointer_event(
         &mut self,
         ctx: &mut EventCtx<'_>,
-        _props: &mut PropertiesMut<'_>,
+        props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        let portal_size = ctx.content_box_size();
+        let cache = ctx.property_cache();
+        let auto_hide_scroll_bar = props.get::<AutoHideScrollBar>(cache).0;
+
+        let portal_size = ctx.content_box().size();
         let content_size = self.content_size;
 
         match *event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
-                // TODO - Remove reference to scale factor.
-                // See https://github.com/linebender/xilem/issues/1264
-                let scale_factor = ctx.get_scale_factor();
+                let scale_factor = ctx.scale_factor();
                 let line_px = PhysicalPosition {
                     x: 120.0 * scale_factor,
                     y: 120.0 * scale_factor,
@@ -441,6 +450,19 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
                     ctx.set_handled();
                 };
             }
+            PointerEvent::Move(_) if auto_hide_scroll_bar => {
+                let f = |mut bar: WidgetMut<'_, ScrollBar>| {
+                    if bar.widget.opacity.value() == 0. {
+                        bar.widget.opacity.move_to(1., SCROLLBAR_ANIM_OVER_MILLIS);
+                        bar.ctx.request_anim_frame();
+                    }
+                };
+                ctx.mutate_child_later(&mut self.scrollbar_horizontal, f);
+                ctx.mutate_child_later(&mut self.scrollbar_vertical, f);
+
+                self.nanos_since_last_pointer_move = Some(0);
+                ctx.request_anim_frame();
+            }
             _ => (),
         }
 
@@ -457,7 +479,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
         _props: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        let portal_size = ctx.content_box_size();
+        let portal_size = ctx.content_box().size();
         let content_size = self.content_size;
         let target = ctx.target();
         let scrollbar_target =
@@ -470,12 +492,8 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
             // the arrow/page/home/end keys.
             && !scrollbar_target
         {
-            // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-            //       https://github.com/linebender/xilem/issues/1264
-            let scale = 1.0;
-
-            let line = 120.0 * scale;
-            let page_y = portal_size.height * scale;
+            let line = 120.0;
+            let page_y = portal_size.height;
 
             use crate::core::keyboard::{Key, NamedKey};
             let mut did_scroll = false;
@@ -565,7 +583,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
         _props: &mut PropertiesMut<'_>,
         event: &AccessEvent,
     ) {
-        let portal_size = ctx.content_box_size();
+        let portal_size = ctx.content_box().size();
         let content_size = self.content_size;
         let target = ctx.target();
         let scrollbar_target =
@@ -580,23 +598,19 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
                     | accesskit::Action::ScrollRight
             )
         {
-            // TODO: Remove HACK: Until scale factor rework happens, just pretend it's always 1.0.
-            //       https://github.com/linebender/xilem/issues/1264
-            let scale = 1.0;
-
             let unit = if let Some(accesskit::ActionData::ScrollUnit(unit)) = &event.data {
                 *unit
             } else {
                 accesskit::ScrollUnit::Item
             };
-            let line = 120.0 * scale;
+            let line = 120.0;
             let amount = match unit {
                 accesskit::ScrollUnit::Item => line,
                 accesskit::ScrollUnit::Page => match event.action {
                     accesskit::Action::ScrollLeft | accesskit::Action::ScrollRight => {
-                        portal_size.width * scale
+                        portal_size.width
                     }
-                    _ => portal_size.height * scale,
+                    _ => portal_size.height,
                 },
             };
 
@@ -620,6 +634,45 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
         }
     }
 
+    fn on_anim_frame(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        interval: u64,
+    ) {
+        let cache = ctx.property_cache();
+        let auto_hide_scroll_bar = props.get::<AutoHideScrollBar>(cache).0;
+
+        match self.nanos_since_last_pointer_move.take() {
+            None => {
+                let rest_opacity = if auto_hide_scroll_bar { 0. } else { 1. };
+                let f = move |bar: WidgetMut<'_, ScrollBar>| {
+                    bar.widget.opacity.move_to(rest_opacity, 0.);
+                };
+                ctx.mutate_child_later(&mut self.scrollbar_horizontal, f);
+                ctx.mutate_child_later(&mut self.scrollbar_vertical, f);
+            }
+            Some(mut since_last_move) if auto_hide_scroll_bar => {
+                since_last_move += interval;
+
+                // TODO: make this configurable or move to theme
+                const VISIBILITY_TIMEOUT: u64 = 400_000_000;
+                if since_last_move >= VISIBILITY_TIMEOUT {
+                    let f = |mut bar: WidgetMut<'_, ScrollBar>| {
+                        bar.widget.opacity.move_to(0., SCROLLBAR_ANIM_OVER_MILLIS);
+                        bar.ctx.request_anim_frame();
+                    };
+                    ctx.mutate_child_later(&mut self.scrollbar_horizontal, f);
+                    ctx.mutate_child_later(&mut self.scrollbar_vertical, f);
+                } else {
+                    self.nanos_since_last_pointer_move = Some(since_last_move);
+                    ctx.request_anim_frame();
+                }
+            }
+            Some(since_last_move) => self.nanos_since_last_pointer_move = Some(since_last_move),
+        }
+    }
+
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         ctx.register_child(&mut self.child);
         ctx.register_child(&mut self.scrollbar_horizontal);
@@ -629,7 +682,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
         match event {
             Update::RequestPanToChild(target) => {
-                let portal_size = ctx.content_box_size();
+                let portal_size = ctx.content_box().size();
                 let content_size = self.content_size;
 
                 self.pan_viewport_to_raw(portal_size, content_size, *target);
@@ -656,16 +709,22 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
         }
     }
 
+    fn property_changed(&mut self, ctx: &mut UpdateCtx<'_>, property_type: TypeId) {
+        if AutoHideScrollBar::matches(property_type) {
+            ctx.request_anim_frame();
+        }
+    }
+
     fn measure(
         &mut self,
         ctx: &mut MeasureCtx<'_>,
         _props: &PropertiesRef<'_>,
         axis: Axis,
         len_req: LenReq,
-        cross_length: Option<f64>,
-    ) -> f64 {
+        cross_length: Option<Length>,
+    ) -> Length {
         match len_req {
-            LenReq::MinContent => 0.,
+            LenReq::MinContent => Length::ZERO,
             LenReq::MaxContent => {
                 let context_size = LayoutSize::maybe(axis.cross(), cross_length);
                 let auto_length = len_req.into();
@@ -691,11 +750,11 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &PropertiesRef<'_>, size: Size) {
         let auto_size = SizeDef::new(
             match self.constrain_horizontal {
-                true => LenDef::FitContent(size.width),
+                true => LenDef::FitContent(size.width.px()),
                 false => LenDef::MaxContent,
             },
             match self.constrain_vertical {
-                true => LenDef::FitContent(size.height),
+                true => LenDef::FitContent(size.height.px()),
                 false => LenDef::MaxContent,
             },
         );
@@ -798,7 +857,7 @@ impl<W: Widget + FromDynWidget + ?Sized> Widget for Portal<W> {
     ) {
         node.set_clips_children();
 
-        let portal_size = ctx.content_box_size();
+        let portal_size = ctx.content_box().size();
         let content_size = self.content_size;
         let scroll_range = (content_size - portal_size).max(Size::ZERO);
 
@@ -882,11 +941,12 @@ mod tests {
                 let context_size = LayoutSize::maybe(axis.cross(), cross_length);
 
                 let other = match axis {
-                    Axis::Horizontal => 0.,
-                    Axis::Vertical => top_pad,
+                    Axis::Horizontal => Length::ZERO,
+                    Axis::Vertical => top_pad.px(),
                 };
 
-                ctx.compute_length(child, auto_length, context_size, axis, cross_length) + other
+                ctx.compute_length(child, auto_length, context_size, axis, cross_length)
+                    .saturating_add(other)
             })
             .layout_fn(move |child, ctx, _props, size| {
                 let child_size = ctx.compute_size(child, SizeDef::fit(size), size.into());
@@ -925,12 +985,9 @@ mod tests {
 
         let mut harness = TestHarness::create_with_size(test_property_set(), widget, (400, 400));
 
-        assert_render_snapshot!(harness, "portal_button_list_no_scroll");
-
         harness.edit_root_widget(|mut portal| {
             Portal::set_viewport_pos(&mut portal, Point::new(0.0, 130.0))
         });
-
         assert_render_snapshot!(harness, "portal_button_list_scrolled");
 
         harness.scroll_into_view(harness.get_widget(button_3).id());
@@ -958,6 +1015,24 @@ mod tests {
 
         harness.scroll_into_view(button_id);
         assert_render_snapshot!(harness, "portal_scrolled_button_into_view");
+    }
+
+    #[test]
+    fn autohidden_scrollbar() {
+        let widget = Portal::new(Flex::column().with_fixed_spacer(1000.px()).prepare())
+            .prepare()
+            .with_props(AutoHideScrollBar(true));
+
+        let mut default_props = test_property_set();
+        default_props.insert::<ScrollBar, _>(crate::properties::Collapsible(true));
+
+        let mut harness = TestHarness::create_with_size(default_props, widget, (200, 200));
+
+        assert_render_snapshot!(harness, "portal_scrollbar_autohidden");
+
+        harness.mouse_move((150., 50.));
+        harness.animate_ms(300);
+        assert_render_snapshot!(harness, "portal_scrollbar_shown_on_mouse_jiggle");
     }
 
     #[test]

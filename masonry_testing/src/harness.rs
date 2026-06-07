@@ -180,7 +180,7 @@ pub struct TestHarnessParams {
     /// This is useful:
     ///
     /// 1) For individual widgets, as they will often be designed with content outside their
-    ///    layout box (e.g. drop shadows, focus indicators).
+    ///    border-box (e.g. drop shadows, focus indicators).
     /// 2) For full apps, as it allows (manual) validation that none of the app content is cut off by
     ///    the window border.
     ///
@@ -693,7 +693,7 @@ impl<W: Widget> TestHarness<W> {
     #[track_caller]
     pub fn mouse_move_to(&mut self, id: WidgetId) {
         let widget = self.get_widget_with_id(id);
-        let local_widget_center = (widget.ctx().border_box_size() / 2.0).to_vec2().to_point();
+        let local_widget_center = widget.ctx().border_box().center();
         let widget_center = widget.ctx().window_transform() * local_widget_center;
 
         // TODO - Add reachable_by_pointer() method.
@@ -731,7 +731,7 @@ impl<W: Widget> TestHarness<W> {
     #[track_caller]
     pub fn mouse_move_to_unchecked(&mut self, id: WidgetId) {
         let widget = self.get_widget_with_id(id);
-        let local_widget_center = (widget.ctx().border_box_size() / 2.0).to_vec2().to_point();
+        let local_widget_center = widget.ctx().border_box().center();
         let widget_center = widget.ctx().window_transform() * local_widget_center;
 
         if widget.ctx().is_stashed() {
@@ -873,6 +873,13 @@ impl<W: Widget> TestHarness<W> {
     /// Returns the [`WidgetId`] of the root widget.
     pub fn root_id(&self) -> WidgetId {
         self.render_root.get_layer_root(0).id()
+    }
+
+    /// Replace the tree-wide default properties at runtime.
+    ///
+    /// Mirrors [`RenderRoot::set_default_properties`].
+    pub fn set_default_properties(&mut self, default_properties: Arc<DefaultProperties>) {
+        self.render_root.set_default_properties(default_properties);
     }
 
     /// Returns a [`WidgetRef`] to the widget with the given id.
