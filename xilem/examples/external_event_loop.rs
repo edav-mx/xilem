@@ -14,6 +14,7 @@ use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::ElementState;
 use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::raw_window_handle::HasDisplayHandle;
 use xilem::style::Style;
 use xilem::view::{Label, button, flex_row, label, sized_box};
 use xilem::{EventLoop, WidgetView, WindowOptions, Xilem};
@@ -133,10 +134,12 @@ fn main() -> Result<(), EventLoopError> {
     let proxy = event_loop.create_proxy();
     let (driver, windows) =
         xilem.into_driver_and_windows(move |event| proxy.send_event(event).map_err(|err| err.0));
+    let raw_display_handle = event_loop.display_handle().ok().map(|handle| handle.as_raw());
     let masonry_state = masonry_winit::app::MasonryState::new(
         event_loop.create_proxy(),
         windows,
         default_property_set(),
+        raw_display_handle,
     );
 
     let mut app = ExternalApp {

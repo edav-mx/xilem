@@ -8,7 +8,7 @@ use std::sync::{Arc, mpsc};
 
 use accesskit_winit::Adapter;
 use copypasta::nop_clipboard::NopClipboardContext;
-use copypasta::{ClipboardContext, ClipboardProvider};
+use copypasta::{ClipboardContext, ClipboardProvider, wayland_clipboard};
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, WindowSizePolicy,
 };
@@ -29,6 +29,7 @@ use winit::dpi::PhysicalSize;
 use winit::error::EventLoopError;
 use winit::event::{DeviceEvent as WinitDeviceEvent, DeviceId, WindowEvent as WinitWindowEvent};
 use winit::event_loop::ActiveEventLoop;
+use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
 use winit::window::{Window as WindowHandle, WindowAttributes, WindowId as HandleId};
 
 use crate::app::{
@@ -285,11 +286,15 @@ pub fn run_with(
     // to try to set their own subscriber once the event loop has started.
     let _ = masonry_core::app::try_init_tracing();
 
+    // Used to talk to the platform clipboard directly on Wayland; see `MasonryState::new`.
+    let raw_display_handle = event_loop.display_handle().ok().map(|handle| handle.as_raw());
+
     let mut main_state = MainState {
         masonry_state: MasonryState::new(
             event_loop.create_proxy(),
             new_windows,
             default_properties,
+            raw_display_handle,
         ),
         app_driver: Box::new(app_driver),
     };
@@ -387,10 +392,15 @@ impl MasonryState<'_> {
     /// - `event_loop_proxy`: a queue provided by [`EventLoop::create_proxy`](winit::event_loop::EventLoop::create_proxy) to send custom events (mostly accessibility) to your event loop.
     /// - `new_windows`: the initial list of windows.
     /// - `default_properties`: the default properties for all the widgets of the app.
+    /// - `raw_display_handle`: the event loop's display handle (e.g. from
+    ///   [`HasDisplayHandle::display_handle`] on the [`EventLoop`]), used to talk to the
+    ///   platform clipboard directly when running under Wayland. Pass `None` to always use
+    ///   `copypasta`'s default clipboard backend (X11-only on Linux).
     pub fn new(
         event_loop_proxy: EventLoopProxy,
         new_windows: Vec<NewWindow>,
         default_properties: DefaultProperties,
+        raw_display_handle: Option<RawDisplayHandle>,
     ) -> Self {
         tracing::debug!(
             backend = ImagingRenderer::BACKEND_NAME,
@@ -401,14 +411,33 @@ impl MasonryState<'_> {
 
         let (signal_sender, signal_receiver) = mpsc::channel::<(WindowId, RenderRootSignal)>();
 
-        let clipboard_cx =
-            ClipboardContext::new().map(|cx| -> Box<dyn ClipboardProvider> { Box::new(cx) });
-        let clipboard_cx = if cfg!(target_os = "linux") {
-            // If we're running on Linux, we might fail to get the clipboard context because
-            // we're using Wayland, so we fall back to NopClipboardContext to be safe.
-            clipboard_cx.unwrap_or_else(|_| Box::new(NopClipboardContext))
-        } else {
-            clipboard_cx.unwrap()
+        // On Wayland, talk to the compositor's clipboard directly via `smithay-clipboard`
+        // rather than going through `copypasta`'s default backend, which is X11-only on Linux
+        // and therefore only sees clipboard content bridged through XWayland (if any).
+        let clipboard_cx: Box<dyn ClipboardProvider> = match raw_display_handle {
+            Some(RawDisplayHandle::Wayland(handle)) => {
+                #[allow(
+                    unsafe_code,
+                    reason = "`handle.display` is a `wl_display*` owned by the winit event loop \
+                              that produced this handle. That event loop outlives this \
+                              `MasonryState`, since it's what drives `MasonryState`'s event handling."
+                )]
+                let (_primary, clipboard) = unsafe {
+                    wayland_clipboard::create_clipboards_from_external(handle.display.as_ptr())
+                };
+                Box::new(clipboard)
+            }
+            _ => {
+                let clipboard_cx =
+                    ClipboardContext::new().map(|cx| -> Box<dyn ClipboardProvider> { Box::new(cx) });
+                if cfg!(target_os = "linux") {
+                    // We might fail to get the X11 clipboard context (e.g. no XWayland), so we
+                    // fall back to NopClipboardContext to be safe.
+                    clipboard_cx.unwrap_or_else(|_| Box::new(NopClipboardContext))
+                } else {
+                    clipboard_cx.unwrap()
+                }
+            }
         };
 
         MasonryState {
