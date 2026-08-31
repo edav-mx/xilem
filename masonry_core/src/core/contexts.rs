@@ -1936,6 +1936,18 @@ impl_context_method!(
             self.global_state.emit_signal(RenderRootSignal::Unminimize);
         }
 
+        /// Shows or hides the window.
+        ///
+        /// This is a client-side operation and, unlike [`unminimize`](Self::unminimize), does not
+        /// require window-manager or compositor cooperation to reverse — making it a reliable way
+        /// to bring a window back after it was hidden, on platforms (e.g. Wayland) where clients
+        /// cannot request their own window be un-minimized.
+        pub fn set_window_visible(&mut self, visible: bool) {
+            trace!(visible, "set_window_visible");
+            self.global_state
+                .emit_signal(RenderRootSignal::SetVisible(visible));
+        }
+
         /// Exits the application.
         pub fn exit(&mut self) {
             trace!("exit");

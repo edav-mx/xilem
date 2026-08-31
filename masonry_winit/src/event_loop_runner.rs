@@ -1132,6 +1132,17 @@ impl MasonryState<'_> {
                 }
                 RenderRootSignal::Unminimize => {
                     handle.set_minimized(false);
+                    // `set_visible(true)` alone does not guarantee the window is raised
+                    // or focused (e.g. after being hidden while running in the background).
+                    handle.focus_window();
+                }
+                RenderRootSignal::SetVisible(visible) => {
+                    handle.set_visible(visible);
+                    if visible {
+                        // `set_visible(true)` alone does not guarantee the window is raised
+                        // or focused (e.g. after being hidden while running in the background).
+                        handle.focus_window();
+                    }
                 }
                 RenderRootSignal::Exit => {
                     event_loop.exit();

@@ -266,6 +266,13 @@ pub enum RenderRootSignal {
     Minimize,
     /// The window should be restored from a minimized state.
     Unminimize,
+    /// The window should be shown or hidden without changing its minimized/maximized state.
+    ///
+    /// Unlike [`Minimize`](Self::Minimize)/[`Unminimize`](Self::Unminimize), showing and hiding
+    /// a window is a purely client-side operation: it does not depend on window-manager or
+    /// compositor cooperation, so it works reliably on platforms (e.g. Wayland) where a client
+    /// cannot request that its own window be un-minimized.
+    SetVisible(bool),
     /// The app should terminate.
     Exit,
     /// The [window system menu] should be shown.
