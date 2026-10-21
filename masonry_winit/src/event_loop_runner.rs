@@ -8,7 +8,17 @@ use std::sync::{Arc, mpsc};
 
 use accesskit_winit::Adapter;
 use copypasta::nop_clipboard::NopClipboardContext;
-use copypasta::{ClipboardContext, ClipboardProvider, wayland_clipboard};
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "macos",
+        target_os = "android",
+        target_os = "ios",
+        target_os = "emscripten"
+    ))
+))]
+use copypasta::wayland_clipboard;
+use copypasta::{ClipboardContext, ClipboardProvider};
 use masonry_core::app::{
     RenderRoot, RenderRootOptions, RenderRootSignal, VisualLayerKind, WindowSizePolicy,
 };
@@ -287,7 +297,10 @@ pub fn run_with(
     let _ = masonry_core::app::try_init_tracing();
 
     // Used to talk to the platform clipboard directly on Wayland; see `MasonryState::new`.
-    let raw_display_handle = event_loop.display_handle().ok().map(|handle| handle.as_raw());
+    let raw_display_handle = event_loop
+        .display_handle()
+        .ok()
+        .map(|handle| handle.as_raw());
 
     let mut main_state = MainState {
         masonry_state: MasonryState::new(
@@ -415,6 +428,17 @@ impl MasonryState {
         // rather than going through `copypasta`'s default backend, which is X11-only on Linux
         // and therefore only sees clipboard content bridged through XWayland (if any).
         let clipboard_cx: Box<dyn ClipboardProvider> = match raw_display_handle {
+            // `copypasta::wayland_clipboard` only exists on Unix-likes other than macOS/Android/iOS,
+            // so this arm is compiled out on Windows (which falls through to the `_` arm).
+            #[cfg(all(
+                unix,
+                not(any(
+                    target_os = "macos",
+                    target_os = "android",
+                    target_os = "ios",
+                    target_os = "emscripten"
+                ))
+            ))]
             Some(RawDisplayHandle::Wayland(handle)) => {
                 #[allow(
                     unsafe_code,
@@ -428,8 +452,8 @@ impl MasonryState {
                 Box::new(clipboard)
             }
             _ => {
-                let clipboard_cx =
-                    ClipboardContext::new().map(|cx| -> Box<dyn ClipboardProvider> { Box::new(cx) });
+                let clipboard_cx = ClipboardContext::new()
+                    .map(|cx| -> Box<dyn ClipboardProvider> { Box::new(cx) });
                 if cfg!(target_os = "linux") {
                     // We might fail to get the X11 clipboard context (e.g. no XWayland), so we
                     // fall back to NopClipboardContext to be safe.
