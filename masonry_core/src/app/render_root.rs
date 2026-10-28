@@ -550,7 +550,6 @@ impl RenderRoot {
     pub fn handle_pointer_event(&mut self, event: PointerEvent) -> Handled {
         let _span = info_span!("pointer_event");
         let handled = run_on_pointer_event_pass(self, &event);
-        run_update_pointer_pass(self);
         self.run_rewrite_passes();
 
         handled
@@ -811,6 +810,13 @@ impl RenderRoot {
     /// Returns the current size of the window.
     pub fn size(&self) -> PhysicalSize<u32> {
         self.global_state.size
+    }
+
+    /// Returns the current DPI scale factor of the window.
+    ///
+    /// This is the number of physical pixels per logical pixel.
+    pub fn scale_factor(&self) -> f64 {
+        self.global_state.scale_factor
     }
 
     pub(crate) fn get_kurbo_size(&self) -> Size {
