@@ -378,9 +378,8 @@ pub(crate) fn run_layout_on(
         );
     }
 
-    // Again, these two blocks read `is_explicitly_stashed` instead of `is_stashed`
-    // because the latter may be outdated if layout code has called `set_stashed`.
-
+    // Again, this block reads `is_explicitly_stashed` instead of `is_stashed` because the latter
+    // may be outdated if layout code has called `set_stashed`.
     let mut children_ids = ChildrenIds::new();
     if cfg!(debug_assertions) {
         children_ids = widget.children_ids();
@@ -394,14 +393,6 @@ pub(crate) fn run_layout_on(
             }
         }
     }
-
-    // If children are stashed, the layout pass will not recurse over them.
-    // We reset need_layout and request_layout to false directly instead.
-    recurse_on_children(id, widget, children.reborrow_mut(), |node| {
-        if node.item.state.is_explicitly_stashed {
-            clear_layout_flags(node);
-        }
-    });
 
     state.paint_box_insets = Insets::ZERO;
 
@@ -423,6 +414,16 @@ pub(crate) fn run_layout_on(
 
     // Run the widget's layout
     widget.layout(&mut ctx, &props, content_box_size);
+
+    // If children are stashed, the layout pass will not recurse over them.
+    // We reset need_layout and request_layout to false directly instead.
+    //
+    // See the notes about `is_explicitly_stashed` above.
+    recurse_on_children(id, widget, children.reborrow_mut(), |node| {
+        if node.item.state.is_explicitly_stashed {
+            clear_layout_flags(node);
+        }
+    });
 
     // Make sure the paint insets cover the shadow insets
     let shadow = props.get::<BoxShadow>(&mut state.property_cache);
@@ -451,9 +452,12 @@ pub(crate) fn run_layout_on(
     {
         let name = widget.short_type_name();
         for child_id in widget.children_ids() {
-            let child_state = &children.item(child_id).unwrap().item.state;
+            let child_state = &mut children.item_mut(child_id).unwrap().item.state;
 
             if child_state.is_explicitly_stashed {
+                // Above, we forcefully set `request_layout` for unstashed children, but children
+                // may have become stashed in the meantime. Unset the flag for them.
+                child_state.request_layout = false;
                 continue;
             }
 
@@ -497,6 +501,11 @@ fn clear_layout_flags(node: ArenaMut<'_, WidgetArenaNode>) {
     let widget = &mut *node.item.widget;
     let state = &mut node.item.state;
     let id = state.id;
+
+    // If `needs_layout` is false, no descendant has layout flags set.
+    if !state.needs_layout() {
+        return;
+    }
 
     state.set_needs_layout(false);
     state.request_layout = false;
